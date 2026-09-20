@@ -14,19 +14,11 @@ FILE_PATH = "sub-001_task-Rest_eeg(1).set"
 OUT_DIR = "eeg_project_figures"
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# ==============================================================================
-# STEP 1: LOAD
-# ==============================================================================
 raw = mne.io.read_raw_eeglab(FILE_PATH, preload=True)
 print(f"Loaded: {len(raw.ch_names)} channels, {raw.info['sfreq']} Hz, "
       f"{raw.n_times / raw.info['sfreq']:.1f} s")
 
-# ==============================================================================
-# STEP 2: DROP CHANNELS FLAGGED IN THE DATASET'S OWN DOCUMENTATION
-# ------------------------------------------------------------------------------
-# FT9, PO3, POz excluded per the study's own channel-quality notes. Replace
-# this comment with the exact citation once confirmed from the source doc.
-# ==============================================================================
+
 raw.drop_channels(["FT9", "PO3", "POz"])
 print(f"Channels after removal: {len(raw.ch_names)}")
 
@@ -35,9 +27,6 @@ fig = raw_original.plot(title="Before Filtering", show=False)
 fig.savefig(f"{OUT_DIR}/01_before_filtering.png", dpi=130, bbox_inches="tight")
 plt.close(fig)
 
-# ==============================================================================
-# STEP 3: CHECK FOR MAINS HUM BEFORE FILTERING (not applied blindly)
-# ==============================================================================
 psd_check = raw_original.compute_psd(fmax=80, method="welch")
 psds_c, freqs_c = psd_check.get_data(return_freqs=True)
 mean_c = psds_c.mean(axis=0)
@@ -46,12 +35,8 @@ for f0 in [50, 60]:
     idx = np.argmin(np.abs(freqs_c - f0))
     print(f"  {f0} Hz: {10 * np.log10(mean_c[idx]):.1f} dB")
 # Neither showed a sharp spike here, so no notch filter is applied below.
-# If your own check DOES show one, use freqs=[60] for US-collected data.
 
 
-# ==============================================================================
-# STEP 4: FILTER
-# ==============================================================================
 raw_filtered = raw_original.copy()
 raw_filtered.filter(l_freq=1.0, h_freq=45.0, fir_design="firwin")
 
@@ -59,9 +44,7 @@ fig2 = raw_filtered.plot(title="After Filtering", show=False)
 fig2.savefig(f"{OUT_DIR}/02_after_filtering.png", dpi=130, bbox_inches="tight")
 plt.close(fig2)
 
-# ==============================================================================
-# STEP 5: BAD-CHANNEL DETECTION (pyprep, not raw variance -- see docstring)
-# ==============================================================================
+
 noisy_detector = NoisyChannels(raw_filtered, random_state=97)
 noisy_detector.find_all_bads()
 bad_channels = noisy_detector.get_bads()
@@ -75,32 +58,18 @@ raw_filtered.info["bads"] = bad_channels
 if bad_channels:
     raw_filtered.interpolate_bads(reset_bads=True)
     print(f"Interpolated {len(bad_channels)} bad channel(s) from neighbors.")
-
-# ==============================================================================
-# STEP 6: ICA
-# ==============================================================================
 ica = mne.preprocessing.ICA(n_components=20, random_state=97, max_iter="auto")
 ica.fit(raw_filtered)
 sources = ica.get_sources(raw_filtered).get_data()
 sfreq = raw_filtered.info["sfreq"]
-
-# --- 6a. Blink detection: correlate each component against Fp1/Fp2 proxy ---
 frontal_proxy = raw_filtered.copy().pick(["Fp1", "Fp2"]).get_data().mean(axis=0)
 blink_corr = [abs(np.corrcoef(sources[i], frontal_proxy)[0, 1]) for i in range(sources.shape[0])]
-
 print("\n=== Blink correlation (r vs Fp1/Fp2 proxy) ===")
 for i, r in enumerate(blink_corr):
     print(f"IC{i}: r = {r:.3f}")
-
 BLINK_THRESHOLD = 0.4
 blink_components = [i for i, r in enumerate(blink_corr) if r > BLINK_THRESHOLD]
 print(f"Blink components (r > {BLINK_THRESHOLD}): {blink_components}")
-
-# --- 6b. Muscle-artifact screening: high-frequency power ratio per component ---
-# EMG/muscle artifact tends to carry disproportionate power at 20-45Hz
-# relative to its own total power, unlike brain signal which falls off with
-# frequency. This is a DIAGNOSTIC, not an auto-exclusion -- see docstring for
-# why (over half the components scored high on this test alone here).
 muscle_ratios = []
 for i in range(sources.shape[0]):
     f, p = welch(sources[i], fs=sfreq, nperseg=int(sfreq * 2))
@@ -125,7 +94,6 @@ if muscle_candidates:
         f.savefig(f"{OUT_DIR}/ica_muscle_candidate_IC{idx}.png", dpi=110, bbox_inches="tight")
         plt.close(f)
 
-# --- Only the evidence-backed blink components are excluded automatically ---
 ica.exclude = blink_components
 
 ica_figs = ica.plot_components(show=False)
@@ -138,23 +106,12 @@ raw_cleaned = raw_filtered.copy()
 fig3 = raw_cleaned.plot(title="After ICA", show=False)
 fig3.savefig(f"{OUT_DIR}/04_after_ica.png", dpi=130, bbox_inches="tight")
 plt.close(fig3)
-
-# ==============================================================================
-# STEP 7: AVERAGE REFERENCE (before any spatial/topomap analysis)
-# ==============================================================================
 raw_cleaned.set_eeg_reference("average")
 
-# ==============================================================================
-# STEP 8: PSD
-# ==============================================================================
 psd = raw_cleaned.compute_psd(fmin=1.0, fmax=45.0, method="welch")
 fig_psd = psd.plot(show=False)
 fig_psd.savefig(f"{OUT_DIR}/05_psd.png", dpi=130, bbox_inches="tight")
 plt.close(fig_psd)
-
-# ==============================================================================
-# STEP 9: TOPOMAPS PER BAND
-# ==============================================================================
 fig_topomap = psd.plot_topomap(
     bands={
         "Delta (1-4 Hz)": (1, 4),
@@ -168,9 +125,6 @@ fig_topomap = psd.plot_topomap(
 fig_topomap.savefig(f"{OUT_DIR}/06_psd_band_topomaps.png", dpi=130, bbox_inches="tight")
 plt.close(fig_topomap)
 
-# ==============================================================================
-# STEP 10: RELATIVE BAND POWER
-# ==============================================================================
 bands = {
     "Delta": (1, 4), "Theta": (4, 8), "Alpha": (8, 12),
     "Beta": (12, 30), "Gamma": (30, 45),
