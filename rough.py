@@ -13,7 +13,8 @@ raw = mne.io.read_raw(File_Path, preload=True)
 print(raw.info)
 print(raw.info["nchan"])
 print(raw.info["ch_names"])
-#raw.plot(duration = 10, n_channels = 15)
+fig = raw.plot(duration=10, n_channels=raw.info["nchan"], title="Raw EEG Data", show=False)
+fig.savefig(f"{OUT_DIR}/raw_eeg_data.png", dpi=130, bbox_inches="tight")
 
 #Extract EEG data and Filtering
 
@@ -26,3 +27,5 @@ print(raw.get_data().shape)
 print("Channels:", len(raw.ch_names))
 print("Samples:", raw.n_times)
 print("Sampling frequency:", raw.info["sfreq"], "Hz")
+
+
