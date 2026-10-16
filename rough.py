@@ -1,86 +1,114 @@
-import mne
 import os
-import matplotlib.pyplot as plt
+import mne
 import numpy as np
-import pandas as pd
+import matplotlib.pyplot as plt
+from mne.preprocessing import ICA
+# Suppress extensive MNE output
 mne.set_log_level("WARNING")
 
-File_Path = "sub-001_task-Rest_eeg (1).set"
+#setup
+FILE_PATH = "sub-001_task-Rest_eeg (1).set"
 OUT_DIR = "eeg_project_figures"
 os.makedirs(OUT_DIR, exist_ok=True)
 
-#gaining general info about the dataset
-raw = mne.io.read_raw(File_Path, preload=True)
-print(raw.info)
-print(raw.info["nchan"])
-print(raw.info["ch_names"])
-fig = raw.plot(duration = 30, n_channels=raw.info["nchan"], title = "Raw EEG Data", show = False)
-fig.savefig(os.path.join(OUT_DIR, "raw_eeg_data.png"), dpi = 300, bbox_inches = "tight")
-#Extract EEG data and Filtering
+MANUAL_EXCLUDE = None  # Set to a list of integers if you want manual override (e.g., [0, 2])
+MAX_BAD_CHANNELS = 6
+REJECT_PERCENTILE = 90
 
-print(raw.get_data())
-print(type(raw))
-print(raw.get_data().min())
-print(raw.get_data().max())
-print(raw.get_data().mean())
-print(raw.get_data().shape)
-print("Channels:", len(raw.ch_names))
-print("Samples:", raw.n_times)
-print("Sampling frequency:", raw.info["sfreq"], "Hz")
+def save_figure(fig, filename):
+    """Helper function to save figures cleanly and close them."""
+    fig.savefig(os.path.join(OUT_DIR, filename), dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
-#inspection of boundary events
-print(raw.annotations)
-print(raw.annotations.description)
-print(raw.annotations.onset)
-#since the boundary occurs at the start (0 secs), the need for revising the filtering method was not found..
+#loading data
+print("Loading raw EEG dataset...")
+raw = mne.io.read_raw(FILE_PATH, preload=True)
 
-#Filtering and Re Referencing
-raw.filter(l_freq=0.5, h_freq=45.0, fir_design="firwin")
+# Crop first 5 seconds to remove startup/amplifier transients
+raw.crop(tmin=5.0)
+print(f"Channels: {raw.info['nchan']} | Duration: {round(raw.times[-1], 1)}s")
+
+# Apply bandpass filter (1–45 Hz) and notch filter (50 Hz powerline)
+raw.filter(l_freq=1.0, h_freq=45.0, fir_design="firwin")
 raw.notch_filter(freqs=50.0)
 
-# FIX: title now matches what the code actually does
-fig_filtered = raw.plot(duration=30, n_channels=raw.info["nchan"], title="Filtered EEG", show=False)
-fig_filtered.savefig(os.path.join(OUT_DIR, "filtered_eeg_data.png"), dpi=300, bbox_inches="tight")
+# Set standard 10-20 electrode layout
+montage = mne.channels.make_standard_montage("standard_1020")
+raw.set_montage(montage, match_case=False)
 
-print("Filtering completed successfully!")
+# Save initial sensor and filtered PSD plots
+save_figure(raw.plot_sensors(kind="topomap", show_names=True, show=False), "montage_sensors.png")
+save_figure(raw.compute_psd(fmin=1, fmax=45).plot(show=False), "psd_filtered.png")
 
-#EEG Montage
-print(raw.get_montage())
-montage = mne.channels.make_standard_montage("standard_1020")   # FIX: extra () removed
-raw_montage = raw.copy()
-raw_montage.set_montage(montage, match_case = False)
-fig = raw_montage.plot_sensors(kind = "topomap", show_names = True, show = False)   # FIX: raw_montage, not raw.montage
-fig.savefig(os.path.join(OUT_DIR, "montage_sensors.png"), dpi=300, bbox_inches="tight")
+#bad channel detection
+ch_std = raw.get_data().std(axis=1) * 1e6
 
-fig = raw.compute_psd().plot(show=False)
-fig.savefig(os.path.join(OUT_DIR, "psd_raw.png"), dpi=300, bbox_inches="tight")
-fig = raw_montage.compute_psd().plot(show=False)
-fig.savefig(os.path.join(OUT_DIR, "psd_raw_montage.png"), dpi=300, bbox_inches="tight")
+# Robust z-score calculation using Median Absolute Deviation (MAD)
+median_std = np.median(ch_std)
+mad = np.median(np.abs(ch_std - median_std))
+robust_z = (ch_std - median_std) / (1.4826 * mad)
 
-#ICA and artifact removal
+# Identify flat channels and noisy outliers
+flat_channels = [raw.ch_names[i] for i in range(len(ch_std)) if ch_std[i] < (0.05 * median_std)]
+noisy_indices = np.argsort(-robust_z)
+noisy_channels = [raw.ch_names[i] for i in noisy_indices if robust_z[i] > 5.0 and raw.ch_names[i] not in flat_channels]
 
-from mne.preprocessing import ICA
-ica = ICA(n_components= 20, random_state = 97, max_iter= "auto")
-ica.fit(raw_montage)   # FIX: fit on the data that has the montage
+# Combine bad channels up to the max limit
+bad_list = flat_channels + noisy_channels[:max(0, MAX_BAD_CHANNELS - len(flat_channels))]
+print(f"Identified bad channels for interpolation: {bad_list}")
 
-# FIX: typo + colon removed; save topographies of all components
-figs = ica.plot_components(show=False)
-if not isinstance(figs, list):
-    figs = [figs]
-for i, f in enumerate(figs):
-    f.savefig(os.path.join(OUT_DIR, f"ica_components_{i}.png"), dpi=300, bbox_inches="tight")
+# Apply bad channels and interpolate
+raw.info["bads"] = bad_list
+raw.interpolate_bads(reset_bads=True)
 
-# FIX: raw_montage, saved to disk
-fig = ica.plot_sources(raw_montage, show=False)
-fig.savefig(os.path.join(OUT_DIR, "ica_sources.png"), dpi=300, bbox_inches="tight")
+# ==========================================
+# 4. INDEPENDENT COMPONENT ANALYSIS (ICA)
+# ==========================================
+print("Fitting ICA model...")
+ica = ICA(n_components=20, random_state=97, max_iter="auto")
+ica.fit(raw)
 
-# One properties page per component (topography, time course, PSD) for inspection
-prop_figs = ica.plot_properties(raw_montage, picks=range(ica.n_components_), show=False)
-for i, f in enumerate(prop_figs):
-    f.savefig(os.path.join(OUT_DIR, f"ica_properties_IC{i:02d}.png"), dpi=300, bbox_inches="tight")
+# Save ICA component topomaps and properties for inspection
+save_figure(ica.plot_components(show=False), "ica_components_overview.png")
+save_figure(ica.plot_sources(raw, show=False), "ica_sources.png")
 
-# After inspecting the saved figures, list the artifact components here, e.g. [0, 3]:
-# ica.exclude = []
-# raw_clean = raw_montage.copy()
-# ica.apply(raw_clean)
+# Automatically detect eye-blink and muscle artifact components
+eye_idx, _ = ica.find_bads_eog(raw, ch_name=["Fp1", "Fp2", "AF7", "AF8"])
+muscle_idx, muscle_scores = ica.find_bads_muscle(raw)
 
+# Combine automated artifact selections
+auto_exclude = sorted(list(set(eye_idx) | set(muscle_idx)))
+ica.exclude = MANUAL_EXCLUDE if MANUAL_EXCLUDE is not None else auto_exclude
+print(f"ICA components marked for exclusion: {ica.exclude}")
+
+# Create copy for comparison, then apply cleaning
+raw_before = raw.copy()
+ica.apply(raw)
+
+# Save cleaning verification overlay plot
+save_figure(ica.plot_overlay(raw_before, exclude=ica.exclude, show=False), "ica_overlay.png")
+
+# Re-reference to average reference
+raw.set_eeg_reference("average", projection=False)
+raw.save(os.path.join(OUT_DIR, "resting_clean_raw.fif"), overwrite=True)
+
+# Create 2-second epochs and drop high-amplitude outlier epochs
+epochs = mne.make_fixed_length_epochs(raw, duration=2.0, preload=True)
+peak_to_peak = np.ptp(epochs.get_data(), axis=2).max(axis=1)
+epochs.drop_bad(reject=dict(eeg=np.percentile(peak_to_peak, REJECT_PERCENTILE)))
+print(f"Epochs retained after rejection: {len(epochs)}")
+
+# Compute Power Spectral Density (PSD) via Welch's method
+psd = epochs.compute_psd(method="welch", fmin=1, fmax=45)
+save_figure(psd.plot(show=False), "psd_epochs.png")
+
+# Define frequency bands for power extraction
+bands = {
+    "Delta": (1, 4),
+    "Theta": (4, 8),
+    "Alpha": (8, 13),
+    "Beta": (13, 30),
+    "Gamma": (30, 45)
+}
+save_figure(psd.plot_topomap(bands=bands, normalize=True, show=False), "band_topomaps.png")
+print("Pipeline execution complete successfully!")
