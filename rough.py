@@ -61,9 +61,8 @@ print(f"Identified bad channels for interpolation: {bad_list}")
 raw.info["bads"] = bad_list
 raw.interpolate_bads(reset_bads=True)
 
-# ==========================================
-# 4. INDEPENDENT COMPONENT ANALYSIS (ICA)
-# ==========================================
+
+# INDEPENDENT COMPONENT ANALYSIS (ICA)
 print("Fitting ICA model...")
 ica = ICA(n_components=20, random_state=97, max_iter="auto")
 ica.fit(raw)
