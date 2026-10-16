@@ -51,7 +51,7 @@ save_fig(ica.plot_sources(raw, show=False), "ica_sources.png")
 for i, f in enumerate(ica.plot_properties(raw, picks=range(ica.n_components_), show=False)):
     save_fig(f, f"ica_properties_IC{i:02d}.png")
 
-ica.exclude = [0, 12, 14, 16, 18]
+ica.exclude = [0,4, 12, 14, 16, 18]
 #Suspected muscle artifact and eye movement based on visual inspection
 
 raw_before = raw.copy()          #uncleaned copy, taken BEFORE apply
@@ -66,10 +66,16 @@ for name, r in [("before", raw_before), ("after", raw)]:
 raw.set_eeg_reference("average", projection=False)
 
 #epoching and PSD calculation
+# Epoching
 epochs = mne.make_fixed_length_epochs(raw, duration=2.0, preload=True)
-ptp = np.ptp(epochs.get_data(), axis=2).max(axis=1)
-epochs.drop_bad(reject=dict(eeg=np.percentile(ptp, 90)))
+
+# Fixed threshold rejection (standard practice)
+# 150 uV is a common conservative threshold. You can use 100 uV if data is noisy.
+reject_criteria = dict(eeg=150e-6)  # 150 microvolts
+epochs.drop_bad(reject=reject_criteria)
+
 print("Epochs kept:", len(epochs))
+print("Epochs dropped:", len(epochs.drop_log) - len(epochs))
 
 psd = epochs.compute_psd(method="welch", fmin=1, fmax=45, n_fft=1000)
 save_fig(psd.plot(show=False), "psd_epochs.png")
